@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: yunyu-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PORT
+        value: 10000
