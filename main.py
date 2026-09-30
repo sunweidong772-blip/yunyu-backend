@@ -99,8 +99,19 @@ def get_user(uid):
 def build_content(row, uid=0):
     d=dict(row); c=db()
     d["fields"]=[{"name":"abcimg","strValue":d.get("abcimg","")}]
-    u=c.execute("SELECT name,avatar FROM users WHERE uid=?",(d["authorId"],)).fetchone()
-    d["author"]={"uid":d["authorId"],"name":u["name"] if u else "admin","avatar":u["avatar"] if u else ""}
+    u=c.execute("SELECT name,avatar,\"group\",experience,vip FROM users WHERE uid=?",(d["authorId"],)).fetchone()
+    au={"uid":d["authorId"],"name":u["name"] if u else "admin",
+        "avatar":u["avatar"] if u else "","isvip":u["vip"] if u else 0,
+        "experience":u["experience"] if u else 0,"group":u["group"] if u else "subscriber",
+        "screenNamecolor":"","customize":"","customizecolor":""}
+    d["authorInfo"]=au
+    d["author"]=au
+    # images array
+    img=d.get("abcimg","")
+    d["images"]=[img] if img else []
+    # category
+    cats=c.execute("SELECT m.mid,m.name FROM relationships r JOIN metas m ON r.mid=m.mid WHERE r.cid=?",(d["cid"],)).fetchall()
+    d["category"]=[{"mid":r["mid"],"name":r["name"]} for r in cats]
     if uid:
         d["isLike"]=1 if c.execute("SELECT 1 FROM likes WHERE uid=? AND cid=? AND type='like'",(uid,d["cid"])).fetchone() else 0
         d["isMark"]=1 if c.execute("SELECT 1 FROM likes WHERE uid=? AND cid=? AND type='mark'",(uid,d["cid"])).fetchone() else 0
