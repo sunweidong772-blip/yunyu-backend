@@ -107,7 +107,13 @@ def build_content(row, uid=0):
     else: d["isLike"]=0; d["isMark"]=0
     return d
 
-async def form(req): return dict(await req.form())
+async def form(req):
+    d = dict(await req.form())
+    if "params" in d:
+        try:
+            d.update(json.loads(d["params"]))
+        except: pass
+    return d
 
 # ===== 用户 =====
 @app.post("/typechoUsers/userLogin")
