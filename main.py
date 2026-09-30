@@ -194,7 +194,7 @@ def user_data(token: str="", uid: int=0):
     fanNum=c.execute("SELECT COUNT(*) n FROM follows WHERE fanId=?",(tid,)).fetchone()["n"]
     followNum=c.execute("SELECT COUNT(*) n FROM follows WHERE uid=?",(tid,)).fetchone()["n"]
     contentsNum=c.execute("SELECT COUNT(*) n FROM contents WHERE authorId=? AND status='publish'",(tid,)).fetchone()["n"]
-    commentsNum=c.execute("SELECT COUNT(*) n FROM comments WHERE uid=?",(tid,)).fetchone()["n"]
+    commentsNum=c.execute("SELECT COUNT(*) n FROM comments WHERE authorId=?",(tid,)).fetchone()["n"]
     today=int(time.strftime("%Y%m%d"))
     isClock=1 if c.execute("SELECT 1 FROM signs WHERE uid=? AND created=?",(tid,today)).fetchone() else 0
     d={"uid":tid,"assets":u["coins"],"fanNum":fanNum,"followNum":followNum,
