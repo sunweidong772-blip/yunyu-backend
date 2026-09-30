@@ -1,12 +1,22 @@
 """云屿 FastApp 完整后端 - FastAPI + SQLite"""
-import os, time, json, sqlite3, hashlib, secrets, uuid
+import os, re, time, json, sqlite3, hashlib, secrets, uuid
 from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 DB = "yunyu.db"
+DEFAULT_AVATAR = "https://picsum.photos/seed/avatar/200/200.jpg"
 app = FastAPI(title="云屿API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+def strip_html(text):
+    """Remove HTML tags and decode common entities."""
+    if not text:
+        return ""
+    t = re.sub(r'<[^>]+>', '', str(text))
+    t = t.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>')
+    t = t.replace('&amp;', '&').replace('&quot;', '"').replace('&#39;', "'")
+    return t.strip()
 
 def db():
     c = sqlite3.connect(DB)
@@ -49,6 +59,17 @@ def init_db():
     CREATE TABLE IF NOT EXISTS spaces(spid INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, description TEXT, created INTEGER);
     CREATE TABLE IF NOT EXISTS finances(fid INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER, amount INTEGER, type TEXT, remark TEXT, created INTEGER);
     """)
+    # add missing columns for existing DBs
+    for _sql in [
+        "ALTER TABLE metas ADD COLUMN parent INTEGER DEFAULT 0",
+        "ALTER TABLE shops ADD COLUMN uid INTEGER DEFAULT 1",
+        "ALTER TABLE shops ADD COLUMN vipDiscount REAL DEFAULT 1",
+        "ALTER TABLE shops ADD COLUMN isView INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN vip INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN screenName TEXT DEFAULT ''",
+    ]:
+        try: c.execute(_sql)
+        except: pass
     c.commit()
     if not c.execute("SELECT 1 FROM users WHERE uid=1").fetchone():
         pw = hashlib.md5(b"admin123").hexdigest()
@@ -99,9 +120,10 @@ def get_user(uid):
 def build_content(row, uid=0):
     d=dict(row); c=db()
     d["fields"]=[{"name":"abcimg","strValue":d.get("abcimg","")}]
+    d["text"]=strip_html(d.get("text",""))
     u=c.execute("SELECT name,avatar,\"group\",experience,vip FROM users WHERE uid=?",(d["authorId"],)).fetchone()
     au={"uid":d["authorId"],"name":u["name"] if u else "admin",
-        "avatar":u["avatar"] if u else "","isvip":u["vip"] if u else 0,
+        "avatar":u["avatar"] if u else DEFAULT_AVATAR,"isvip":u["vip"] if u else 0,
         "experience":u["experience"] if u else 0,"group":u["group"] if u else "subscriber",
         "screenNamecolor":"","customize":"","customizecolor":""}
     d["authorInfo"]=au
@@ -133,7 +155,7 @@ async def login(req: Request):
         (f.get("name",""),f.get("name",""),hashlib.md5(f.get("password","").encode()).hexdigest())).fetchone()
     if not u: return fail("用户名或密码错误")
     token=secrets.token_hex(16); c=db(); c.execute("UPDATE users SET token=? WHERE uid=?",(token,u["uid"])); c.commit()
-    return ok({"uid":u["uid"],"name":u["name"],"token":token,"coins":u["coins"],"vip":u["vip"],"avatar":u["avatar"],"group":u["group"],"mail":u["mail"],"experience":u["experience"]})
+    return ok({"uid":u["uid"],"name":u["name"],"screenName":u["name"],"token":token,"coins":u["coins"],"vip":u["vip"],"isvip":u["vip"],"avatar":u["avatar"] or DEFAULT_AVATAR,"group":u["group"],"mail":u["mail"],"experience":u["experience"],"customize":"","customizecolor":"","screenNamecolor":"","lv":1,"fansNum":0,"followNum":0})
 
 @app.post("/typechoUsers/userRegister")
 async def register(req: Request):
@@ -164,8 +186,22 @@ def user_info(token: str=""):
     return ok(d)
 
 @app.get("/typechoUsers/userData")
-def user_data(uid: int=0):
-    u=get_user(uid); return ok(dict(u) if u else {})
+def user_data(token: str="", uid: int=0):
+    tid = uid or get_uid(token)
+    if not tid: return fail("请先登录")
+    c=db(); u=get_user(tid)
+    if not u: return fail("用户不存在")
+    fanNum=c.execute("SELECT COUNT(*) n FROM follows WHERE fanId=?",(tid,)).fetchone()["n"]
+    followNum=c.execute("SELECT COUNT(*) n FROM follows WHERE uid=?",(tid,)).fetchone()["n"]
+    contentsNum=c.execute("SELECT COUNT(*) n FROM contents WHERE authorId=? AND status='publish'",(tid,)).fetchone()["n"]
+    commentsNum=c.execute("SELECT COUNT(*) n FROM comments WHERE uid=?",(tid,)).fetchone()["n"]
+    today=int(time.strftime("%Y%m%d"))
+    isClock=1 if c.execute("SELECT 1 FROM signs WHERE uid=? AND created=?",(tid,today)).fetchone() else 0
+    d={"uid":tid,"assets":u["coins"],"fanNum":fanNum,"followNum":followNum,
+       "contentsNum":contentsNum,"commentsNum":commentsNum,"isClock":isClock,
+       "coins":u["coins"],"vip":u["vip"],"name":u["name"],"screenName":u["name"],
+       "avatar":u["avatar"] or DEFAULT_AVATAR,"group":u["group"],"experience":u["experience"]}
+    return ok(d)
 
 @app.get("/typechoUsers/userList")
 def user_list(page: int=1, limit: int=20):
@@ -283,7 +319,14 @@ async def comments_add(req: Request):
 # ===== 分类 =====
 @app.get("/typechoMetas/metasList")
 def metas_list():
-    return ok([dict(r) for r in db().execute("SELECT * FROM metas WHERE type='category' ORDER BY orderNum").fetchall()])
+    rows=db().execute("SELECT * FROM metas WHERE type='category' ORDER BY orderNum").fetchall()
+    result=[]
+    for r in rows:
+        d=dict(r)
+        d["parent"]=d.get("parent",0)
+        d["count"]=db().execute("SELECT COUNT(*) c FROM relationships WHERE mid=?",(d["mid"],)).fetchone()["c"]
+        result.append(d)
+    return ok(result)
 
 @app.get("/typechoMetas/metaInfo")
 def meta_info(mid: int=0):
@@ -298,7 +341,9 @@ def select_contents(mid: int=0, page: int=1, limit: int=10, token: str=""):
 # ===== 首页 =====
 @app.get("/typechoHome/bannerList")
 def banner_list():
-    return ok([dict(r) for r in db().execute("SELECT aid as cid,title,image as url FROM ads WHERE type='banner' AND status=1 ORDER BY sort").fetchall()])
+    rows=db().execute("SELECT aid,title,image FROM ads WHERE type='banner' AND status=1 ORDER BY sort").fetchall()
+    return ok([{"id":r["aid"],"title":r["title"],"image":r["image"],
+                "linkType":0,"linkValue":""} for r in rows])
 
 @app.get("/typechoHome/featureList")
 def feature_list(): return ok([])
@@ -354,14 +399,56 @@ async def do_sign(req: Request):
     c.commit(); return ok({"reward":10})
 
 # ===== 商城 =====
+def build_shop(row, c=None):
+    c = c or db()
+    d = dict(row)
+    d["id"] = d.get("sid", 0)
+    d["imgurl"] = d.get("image", "")
+    d["title"] = d.get("name", "")
+    d["sellNum"] = d.get("sales", 0)
+    d["num"] = d.get("stock", -1)
+    d["vipDiscount"] = d.get("vipDiscount", 1) or 1
+    d["isView"] = d.get("isView", 0)
+    # seller info
+    su = c.execute("SELECT uid,name,avatar FROM users WHERE uid=?", (d.get("uid", 0),)).fetchone()
+    if su:
+        d["userJson"] = {"uid": su["uid"], "name": su["name"], "avatar": su["avatar"] or DEFAULT_AVATAR}
+    else:
+        d["userJson"] = None
+    return d
+
 @app.get("/typechoShop/shopList")
-def shop_list(page: int=1, limit: int=20, typeId: int=0):
-    off=(page-1)*limit
-    return ok([dict(r) for r in db().execute("SELECT * FROM shops WHERE status=1 ORDER BY sid DESC LIMIT ? OFFSET ?",(limit,off)).fetchall()])
+def shop_list(page: int=1, limit: int=20, typeId: int=0, searchParams: str="", uid: int=0):
+    c=db(); off=(page-1)*limit
+    where="WHERE 1=1"; params=[]
+    # parse searchParams JSON
+    if searchParams:
+        try:
+            sp=json.loads(searchParams)
+            if sp.get("uid"):
+                where+=" AND uid=?"; params.append(sp["uid"])
+            if sp.get("status") is not None:
+                where+=" AND status=?"; params.append(sp["status"])
+            if sp.get("typeId"):
+                where+=" AND typeId=?"; params.append(sp["typeId"])
+            if sp.get("keyword"):
+                where+=" AND name LIKE ?"; params.append(f"%{sp['keyword']}%")
+        except: pass
+    if uid:
+        where+=" AND uid=?"; params.append(uid)
+    if typeId:
+        where+=" AND typeId=?"; params.append(typeId)
+    # my shop page shows all statuses; public shop only status=1
+    if not searchParams and not uid:
+        where+=" AND status=1"
+    params.extend([limit, off])
+    rows=c.execute(f"SELECT * FROM shops {where} ORDER BY sid DESC LIMIT ? OFFSET ?", params).fetchall()
+    return ok([build_shop(r, c) for r in rows])
 
 @app.get("/typechoShop/shopInfo")
 def shop_info(sid: int=0):
-    r=db().execute("SELECT * FROM shops WHERE sid=?",(sid,)).fetchone(); return ok(dict(r) if r else {})
+    r=db().execute("SELECT * FROM shops WHERE sid=?",(sid,)).fetchone()
+    return ok(build_shop(r) if r else {})
 
 @app.get("/typechoShop/shopTypeList")
 def shop_type_list():
